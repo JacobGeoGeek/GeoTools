@@ -1,14 +1,12 @@
 package org.geotools.tutorial.feature;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileReader;
-import java.io.Serializable;
+import java.io.*;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import javax.swing.UIManager;
+
 import org.geotools.data.DataUtilities;
 import org.geotools.data.DefaultTransaction;
 import org.geotools.data.Transaction;
@@ -47,21 +45,17 @@ public class Csv2Shape {
             return;
         }
 
+
+
         /*
          * We use the DataUtilities class to create a FeatureType that will describe the data in our
          * shapefile.
          *
          * See also the createFeatureType method below for another, more flexible approach.
          */
-        final SimpleFeatureType TYPE =
-                DataUtilities.createType(
-                        "Location",
-                        "the_geom:Point:srid=4326,"
-                                + // <- the geometry attribute: Point type
-                                "name:String,"
-                                + // <- a String attribute
-                                "number:Integer" // a number attribute
-                );
+
+        final SimpleFeatureType TYPE = createFeatureType(file);
+
         System.out.println("TYPE:" + TYPE);
 
         /*
@@ -93,7 +87,7 @@ public class Csv2Shape {
 
                     /* Longitude (= x coord) first ! */
                     Point point = geometryFactory.createPoint(new Coordinate(longitude, latitude));
-
+                    
                     featureBuilder.add(point);
                     featureBuilder.add(name);
                     featureBuilder.add(number);
@@ -121,5 +115,117 @@ public class Csv2Shape {
          * TYPE is used as a template to describe the file contents
          */
         newDataStore.createSchema(TYPE);
+
+        /*
+         * Write the features to the shapefile
+         */
+        Transaction transaction = new DefaultTransaction("create");
+
+        String typeName = newDataStore.getTypeNames()[0];
+        SimpleFeatureSource featureSource = newDataStore.getFeatureSource(typeName);
+        SimpleFeatureType SHAPE_TYPE = featureSource.getSchema();
+        /*
+         * The Shapefile format has a couple limitations:
+         * - "the_geom" is always first, and used for the geometry attribute name
+         * - "the_geom" must be of type Point, MultiPoint, MuiltiLineString, MultiPolygon
+         * - Attribute names are limited in length
+         * - Not all data types are supported (example Timestamp represented as Date)
+         *
+         * Each data store has different limitations so check the resulting SimpleFeatureType.
+         */
+        System.out.println("SHAPE:" + SHAPE_TYPE);
+
+        if (featureSource instanceof SimpleFeatureStore) {
+            SimpleFeatureStore featureStore = (SimpleFeatureStore) featureSource;
+            /*
+             * SimpleFeatureStore has a method to add features from a
+             * SimpleFeatureCollection object, so we use the ListFeatureCollection
+             * class to wrap our list of features.
+             */
+            SimpleFeatureCollection collection = new ListFeatureCollection(TYPE, features);
+            featureStore.setTransaction(transaction);
+            try {
+                featureStore.addFeatures(collection);
+                transaction.commit();
+            } catch (Exception problem) {
+                problem.printStackTrace();
+                transaction.rollback();
+            } finally {
+                transaction.close();
+            }
+            System.exit(0); // success!
+        } else {
+            System.out.println(typeName + " does not support read/write access");
+            System.exit(1);
+        }
+    }
+
+    /**
+     * Prompt the user for the name and path to use for the output shapefile
+     *
+     * @param csvFile the input csv file used to create a default shapefile name
+     * @return name and path for the shapefile as a new File object
+     */
+    private static File getNewShapeFile(File csvFile) {
+        String path = csvFile.getAbsolutePath();
+        String newPath = path.substring(0, path.length() - 4) + ".shp";
+
+        JFileDataStoreChooser chooser = new JFileDataStoreChooser("shp");
+        chooser.setDialogTitle("Save shapefile");
+        chooser.setSelectedFile(new File(newPath));
+
+        int returnVal = chooser.showSaveDialog(null);
+
+        if (returnVal != JFileDataStoreChooser.APPROVE_OPTION) {
+            // the user cancelled the dialog
+            System.exit(0);
+        }
+
+        File newFile = chooser.getSelectedFile();
+        if (newFile.equals(csvFile)) {
+            System.out.println("Error: cannot replace " + csvFile);
+            System.exit(0);
+        }
+
+        return newFile;
+    }
+
+    /**
+     * Here is how you can use a SimpleFeatureType builder to create the schema for your shapefile
+     * dynamically.
+     *
+     * <p>This method is an improvement on the code used in the main method above (where we used
+     * DataUtilities.createFeatureType) because we can set a Coordinate Reference System for the
+     * FeatureType and a a maximum field length for the 'name' field dddd
+     */
+    private static SimpleFeatureType createFeatureType(File file) {
+
+        try (BufferedReader reader = new BufferedReader(new FileReader(file))) {
+
+            String header = reader.readLine();
+            String tokens[] = header.split("\\,");
+
+            SimpleFeatureTypeBuilder builder = new SimpleFeatureTypeBuilder();
+            builder.setName("Location");
+
+
+            builder.setCRS(DefaultGeographicCRS.WGS84); // <- Coordinate reference system
+
+            // add attributes in order
+            builder.add("the_geom", Point.class);
+            builder.length(15).add(tokens[2], String.class); // <- 15 chars width for name field
+            builder.add(tokens[3], Integer.class);
+
+            // build the type
+            final SimpleFeatureType LOCATION = builder.buildFeatureType();
+
+            return LOCATION;
+        } catch (FileNotFoundException e) {
+            e.printStackTrace();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+        return null;
     }
 }
